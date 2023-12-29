@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"golang.org/x/net/html/charset"
@@ -42,6 +43,7 @@ type ValuteWithValueWithDate struct {
 }
 
 var ValuteDict = make(map[string][]ValueWithDate)
+var lock = sync.RWMutex{}
 
 const (
 	DDMMYYYY        = "02/01/2006"
@@ -94,22 +96,34 @@ func CheckString(value string) string {
 	return value
 }
 
+func create(key string) {
+	lock.Lock()
+	defer lock.Unlock()
+
+	_, ok := ValuteDict[key]
+	if !ok {
+		ValuteDict[key] = []ValueWithDate{}
+	}
+}
+
+func write(key string, val float64, date string) {
+	lock.Lock()
+	defer lock.Unlock()
+
+	ValuteDict[key] = append(ValuteDict[key], ValueWithDate{
+		Value: val,
+		Date:  date,
+	})
+}
+
 func GetDataFromStruct(vc ValCurs) error {
 	for _, v := range vc.Valute {
-		_, ok := ValuteDict[v.CharCode]
-		if !ok {
-			ValuteDict[v.CharCode] = []ValueWithDate{}
-		}
-
+		create(v.CharCode)
 		floatValue, err := strconv.ParseFloat(CheckString(v.Value), 64)
 		if err != nil {
 			return fmt.Errorf("strconv.ParseFloat: %v", err)
 		}
-
-		ValuteDict[v.CharCode] = append(ValuteDict[v.CharCode], ValueWithDate{
-			Value: floatValue,
-			Date:  vc.Date,
-		})
+		write(v.CharCode, floatValue, vc.Date)
 	}
 
 	return nil
@@ -149,20 +163,29 @@ func GetValues() (ValuteWithValueWithDate, ValuteWithValueWithDate, float64) {
 
 func GetDataForLast90Days() error {
 	now := time.Now().UTC()
+
+	var wg sync.WaitGroup
+
 	for i := 0; i < 90; i++ {
+		wg.Add(1)
 		now = now.AddDate(0, 0, -1)
 		dateInFormat := now.Format(DDMMYYYY)
 
-		vc, err := GetDayStruct(dateInFormat)
-		if err != nil {
-			log.Fatalf("GetDayStruct: %v", err)
-		}
+		go func(dateInFormat string) {
+			defer wg.Done()
+			vc, err := GetDayStruct(dateInFormat)
+			if err != nil {
+				log.Fatalf("GetDayStruct: %v", err)
+			}
 
-		if err := GetDataFromStruct(vc); err != nil {
-			return fmt.Errorf("GetDataFromStruct: %v", err)
-		}
+			if err := GetDataFromStruct(vc); err != nil {
+				log.Fatalf("GetDataFromStruct: %v", err)
+			}
+		}(dateInFormat)
 
 	}
+
+	wg.Wait()
 
 	return nil
 }
